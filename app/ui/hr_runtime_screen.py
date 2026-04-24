@@ -417,6 +417,7 @@ def _get_download_path_for_selected_item(
 def _build_inline_slot_updates(
     items_state: list[dict],
     selected_item_state: dict | None,
+    inline_feedback_html: str = "",
 ) -> list:
     """
     Генерирует update-ы сразу для всех слотов уведомлений.
@@ -449,7 +450,11 @@ def _build_inline_slot_updates(
             item_identity = _get_item_identity(item)
             is_selected = item_identity == selected_identity
 
-            detail_html = _render_notification_details_html(item) if is_selected else ""
+            if is_selected:
+                detail_html = f"{inline_feedback_html}{_render_notification_details_html(item)}"
+            else:
+                detail_html = ""
+
             show_mark_processed = _should_show_mark_processed(item, is_selected)
             show_send_reminder = _should_show_send_reminder(item, is_selected)
             download_path = _get_download_path_for_selected_item(item, is_selected)
@@ -651,6 +656,38 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             gr.update(visible=(selected_tab_code == TAB_NOTIFICATIONS)),
         ]
 
+    def _pin_selected_item_if_filtered_out(
+        items_state: list[dict],
+        selected_item_state: dict | None,
+        previous_items_state: list[dict] | None,
+    ) -> list[dict]:
+        selected_item = _deserialize_item(selected_item_state)
+        if not selected_item:
+            return items_state
+
+        selected_identity = _get_item_identity(selected_item)
+        if not selected_identity:
+            return items_state
+
+        already_present = _find_item_by_identity(
+            items_state=items_state,
+            source_type_code=selected_item.source_type_code,
+            queue_record_id=selected_item.queue_record_id,
+        )
+        if already_present:
+            return items_state
+
+        insert_index = 0
+        for old_index, old_raw_item in enumerate(previous_items_state or []):
+            old_item = _deserialize_item(old_raw_item)
+            if _get_item_identity(old_item) == selected_identity:
+                insert_index = min(old_index, len(items_state))
+                break
+
+        pinned_items = list(items_state)
+        pinned_items.insert(insert_index, selected_item_state)
+        return pinned_items
+
     def _compose_notifications_response(
         auth_state_dict: dict | None,
         type_filter: str,
@@ -699,6 +736,11 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             previous_items_state=previous_items_state,
             fresh_items_state=fresh_items_state,
         )
+        items_state = _pin_selected_item_if_filtered_out(
+            items_state=items_state,
+            selected_item_state=selected_item_state,
+            previous_items_state=previous_items_state,
+        )
 
         actual_selected_state = None
         selected_item = _deserialize_item(selected_item_state)
@@ -711,8 +753,12 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             if actual_item:
                 actual_selected_state = asdict(actual_item)
 
+        inline_feedback_html = ""
         if dashboard.load_error_message:
             final_feedback_html = _render_feedback_html(dashboard.load_error_message, "error")
+        elif feedback_message and actual_selected_state:
+            final_feedback_html = ""
+            inline_feedback_html = _render_feedback_html(feedback_message, feedback_kind)
         elif feedback_message:
             final_feedback_html = _render_feedback_html(feedback_message, feedback_kind)
         else:
@@ -728,7 +774,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             "",
             gr.update(visible=False),
             gr.update(visible=False),
-            *_build_inline_slot_updates(items_state, actual_selected_state),
+            *_build_inline_slot_updates(items_state, actual_selected_state, inline_feedback_html),
         )
 
     def _refresh_notifications(
@@ -802,13 +848,18 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             queue_record_id=selected_item.queue_record_id,
         )
 
+        selected_item_state = asdict(selected_item)
+        if action_result.success:
+            selected_item_state["queue_status_code"] = "read"
+            selected_item_state["queue_status_label"] = "Прочитано"
+
         return _compose_notifications_response(
             auth_state_dict=auth_state_dict,
             type_filter=type_filter,
             status_filter=status_filter,
             feedback_message=action_result.message,
             feedback_kind="success" if action_result.success else "error",
-            selected_item_state=asdict(selected_item),
+            selected_item_state=selected_item_state,
             previous_items_state=safe_items_state,
         )
 
@@ -1075,31 +1126,31 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                             with gr.Column(visible=False) as inline_detail_container:
                                 inline_detail_html = gr.HTML(value="")
 
-                                with gr.Row():
+                                with gr.Row(elem_classes=["notification-actions-row"]):
                                     mark_button = gr.Button(
                                         "Отметить как обработано",
                                         visible=False,
-                                        elem_classes=["action-button"],
+                                        elem_classes=["action-button", "notification-action-button"],
                                     )
 
                                     reminder_button = gr.Button(
                                         "Отправить напоминание сотруднику",
                                         visible=False,
-                                        elem_classes=["action-button"],
+                                        elem_classes=["action-button", "notification-action-button"],
+                                    )
+
+                                    download_button = gr.DownloadButton(
+                                        label="Скачать файл",
+                                        value=None,
+                                        visible=False,
+                                        elem_classes=["action-button", "notification-action-button"],
                                     )
 
                                     close_button = gr.Button(
                                         "Закрыть",
                                         visible=False,
-                                        elem_classes=["form-cancel-button"],
+                                        elem_classes=["form-cancel-button", "notification-action-button"],
                                     )
-
-                                download_button = gr.DownloadButton(
-                                    label="Скачать файл",
-                                    value=None,
-                                    visible=False,
-                                    elem_classes=["action-button"],
-                                )
 
                         notification_slot_containers.append(slot_container)
                         notification_card_html_components.append(notification_card_html)
@@ -1348,3 +1399,4 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
         "mark_processed_button": mark_processed_button,
         "send_reminder_button": send_reminder_button,
     }
+

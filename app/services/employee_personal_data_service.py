@@ -26,6 +26,7 @@ from app.models.employee_resume_models import (
 )
 from app.repositories.employee_profile_repository import EmployeeProfileRepository
 from app.repositories.resume_request_repository import ResumeRequestRepository
+from app.services.achievement_engine_service import AchievementEngineService
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,16 @@ class EmployeePersonalDataService:
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.achievement_engine = AchievementEngineService()
+
+    def _evaluate_achievements_after_resume_change(self, employee_user_id: int) -> None:
+        """
+        После успешной отправки заявки пересчитывает достижения сотрудника.
+        """
+        try:
+            self.achievement_engine.evaluate_for_employee(employee_user_id)
+        except Exception:
+            return
 
     # =========================================================
     # Публичный метод загрузки вкладки "Личные данные"
@@ -352,6 +363,8 @@ class EmployeePersonalDataService:
                     notification_id=notification_id,
                     recipient_user_ids=hr_user_ids,
                 )
+
+            self._evaluate_achievements_after_resume_change(employee_user_id)
 
             return ResumeChangeRequestResult(
                 success=True,

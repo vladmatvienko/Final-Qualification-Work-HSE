@@ -48,6 +48,28 @@ def _get_logo_data_uri() -> str:
 LOGO_DATA_URI = _get_logo_data_uri()
 
 
+def _render_employee_active_tab_style(selected_tab_code: str | None) -> str:
+    """
+    CSS-переключатель вкладок сотрудника.
+    """
+    selected_tab_code = selected_tab_code or TAB_PERSONAL
+    allowed_tabs = {TAB_PERSONAL, TAB_ACHIEVEMENTS, TAB_STORE, TAB_NOTIFICATIONS}
+    if selected_tab_code not in allowed_tabs:
+        selected_tab_code = TAB_PERSONAL
+
+    def display_for(tab_code: str) -> str:
+        return "block" if selected_tab_code == tab_code else "none"
+
+    return f"""
+    <style id="employee-active-tab-style">
+        #employee-tab-personal {{ display: {display_for(TAB_PERSONAL)} !important; }}
+        #employee-tab-achievements {{ display: {display_for(TAB_ACHIEVEMENTS)} !important; }}
+        #employee-tab-store {{ display: {display_for(TAB_STORE)} !important; }}
+        #employee-tab-notifications {{ display: {display_for(TAB_NOTIFICATIONS)} !important; }}
+    </style>
+    """
+
+
 def _render_brand_html(app_title: str) -> str:
     return f"""
     <div class="brand-box">
@@ -396,6 +418,15 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
 
     if not auth_session.is_authenticated or auth_session.role != "employee" or not auth_session.user_id:
         return {
+            "nav_radio": TAB_PERSONAL,
+            "active_tab_style": _render_employee_active_tab_style(TAB_PERSONAL),
+            "personal_container_visible": True,
+            "achievements_container_visible": True,
+            "store_container_visible": True,
+            "notifications_container_visible": True,
+            "action_panel_visible": True,
+            "form_container_visible": False,
+            "form_feedback": "",
             "header_html": "",
             "personal_page_feedback_html": "",
             "personal_resume_html": "",
@@ -443,6 +474,15 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
     form_submit_enabled = personal_data.db_available and bool(section_choices)
 
     return {
+        "nav_radio": TAB_PERSONAL,
+        "active_tab_style": _render_employee_active_tab_style(TAB_PERSONAL),
+        "personal_container_visible": True,
+        "achievements_container_visible": True,
+        "store_container_visible": True,
+        "notifications_container_visible": True,
+        "action_panel_visible": True,
+        "form_container_visible": False,
+        "form_feedback": "",
         "header_html": _render_header_html(
             full_name=full_name,
             achievements_done=achievement_dashboard.completed_possible_count,
@@ -466,6 +506,15 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
 
 def get_employee_screen_reset_payload() -> dict:
     return {
+        "nav_radio": TAB_PERSONAL,
+        "active_tab_style": _render_employee_active_tab_style(TAB_PERSONAL),
+        "personal_container_visible": True,
+        "achievements_container_visible": True,
+        "store_container_visible": True,
+        "notifications_container_visible": True,
+        "action_panel_visible": True,
+        "form_container_visible": False,
+        "form_feedback": "",
         "header_html": "",
         "personal_page_feedback_html": "",
         "personal_resume_html": "",
@@ -501,20 +550,63 @@ def get_employee_screen_reset_payload() -> dict:
 
 def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.components.Component]:
     def _switch_employee_tab(selected_tab_code: str):
+        """
+        Мгновенно переключает вкладку через CSS, не размонтируя панели Gradio.
+        """
+        selected_tab_code = selected_tab_code or TAB_PERSONAL
         is_personal_tab = selected_tab_code == TAB_PERSONAL
 
-        return [
-            gr.update(visible=is_personal_tab),
-            gr.update(visible=(selected_tab_code == TAB_ACHIEVEMENTS)),
-            gr.update(visible=(selected_tab_code == TAB_STORE)),
-            gr.update(visible=(selected_tab_code == TAB_NOTIFICATIONS)),
+        return (
+            _render_employee_active_tab_style(selected_tab_code),
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=True),
+            gr.update(visible=True),
             gr.update(visible=is_personal_tab),
             gr.update(visible=False),
             "",
             gr.update(value=None),
             gr.update(value=""),
             gr.update(value=None),
-        ]
+        )
+
+    def _refresh_active_employee_tab(
+        selected_tab_code: str,
+        auth_state_dict: dict | None,
+        current_store_items_state: list[dict] | None,
+        current_notification_items_state: list[dict] | None,
+    ):
+        """
+        Обновляет данные выбранной вкладки после того, как CSS уже показал панель.
+        """
+        selected_tab_code = selected_tab_code or TAB_PERSONAL
+
+        personal_feedback_update, personal_resume_update = _refresh_personal_when_needed(
+            selected_tab_code=selected_tab_code,
+            auth_state_dict=auth_state_dict,
+        )
+        achievements_update = _refresh_achievements_when_needed(
+            selected_tab_code=selected_tab_code,
+            auth_state_dict=auth_state_dict,
+        )
+        store_updates = _refresh_store_when_needed(
+            selected_tab_code=selected_tab_code,
+            auth_state_dict=auth_state_dict,
+            current_store_items_state=current_store_items_state,
+        )
+        notification_updates = _refresh_notifications_when_needed(
+            selected_tab_code=selected_tab_code,
+            auth_state_dict=auth_state_dict,
+            current_notification_items_state=current_notification_items_state,
+        )
+
+        return (
+            personal_feedback_update,
+            personal_resume_update,
+            achievements_update,
+            *store_updates,
+            *notification_updates,
+        )
 
     def _open_form(auth_state_dict: dict | None):
         auth_session = AuthSession.from_state(auth_state_dict)
@@ -646,6 +738,66 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             form_submit_enabled,
             reason,
         )
+
+    def _render_auth_required_page(title: str) -> str:
+        return f"""
+        <div class="page-card">
+            <div class="page-title-row">
+                <div class="page-title">{escape(title)}</div>
+                <div class="page-subtitle">Сначала выполните вход.</div>
+            </div>
+        </div>
+        """
+
+    def _refresh_personal_when_needed(
+        selected_tab_code: str,
+        auth_state_dict: dict | None,
+    ):
+        if selected_tab_code != TAB_PERSONAL:
+            return gr.update(), gr.update()
+
+        auth_session = AuthSession.from_state(auth_state_dict)
+        if not auth_session.is_authenticated or auth_session.role != "employee" or not auth_session.user_id:
+            return (
+                _render_feedback_html("Сессия пользователя недействительна. Выполните вход заново.", "error"),
+                "",
+            )
+
+        try:
+            personal_data = PERSONAL_DATA_SERVICE.get_personal_data(auth_session.user_id)
+            feedback_html = (
+                _render_feedback_html(personal_data.load_error_message, "error")
+                if personal_data.load_error_message
+                else ""
+            )
+            return feedback_html, _render_resume_sections_html(personal_data)
+        except Exception as exc:
+            return (
+                _render_feedback_html(f"Не удалось загрузить личные данные: {exc}", "error"),
+                "",
+            )
+
+    def _refresh_achievements_when_needed(
+        selected_tab_code: str,
+        auth_state_dict: dict | None,
+    ):
+        if selected_tab_code != TAB_ACHIEVEMENTS:
+            return gr.update()
+
+        auth_session = AuthSession.from_state(auth_state_dict)
+        if not auth_session.is_authenticated or auth_session.role != "employee" or not auth_session.user_id:
+            return _render_auth_required_page("Достижения")
+
+        try:
+            achievement_dashboard = ACHIEVEMENT_SERVICE.get_dashboard(auth_session.user_id)
+            return _render_achievements_page_html(achievement_dashboard)
+        except Exception as exc:
+            return f"""
+            <div class="page-card">
+                {_render_page_header("Достижения", "Данные временно недоступны.")}
+                {_render_feedback_html(f"Не удалось загрузить достижения: {exc}", "error")}
+            </div>
+            """
 
     def _refresh_store_when_needed(
         selected_tab_code: str,
@@ -1033,13 +1185,17 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             )
 
         with gr.Column(scale=10, min_width=720, elem_classes=["content-column"]):
+            active_tab_style = gr.HTML(
+                value=_render_employee_active_tab_style(TAB_PERSONAL),
+                visible=True,
+            )
             header_html = gr.HTML(value="", elem_classes=["header-card"])
 
             with gr.Column(elem_classes=["content-stack"]):
                 # -------------------------------------------------
                 # ЛИЧНЫЕ ДАННЫЕ
                 # -------------------------------------------------
-                with gr.Column(visible=True, elem_classes=["content-view", "main-tab-view"]) as personal_container:
+                with gr.Column(visible=True, elem_id="employee-tab-personal", elem_classes=["content-view", "main-tab-view"]) as personal_container:
                     with gr.Column(elem_classes=["page-card", "personal-data-page-card"]):
                         gr.HTML(
                             _render_page_header(
@@ -1055,8 +1211,12 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                             )
                         )
 
-                        personal_page_feedback = gr.HTML(value="")
                         personal_resume_html = gr.HTML(value="")
+
+                        personal_page_feedback = gr.HTML(
+                            value="",
+                            elem_classes=["resume-action-feedback"],
+                        )
 
                         with gr.Column(visible=True, elem_classes=["runtime-action-panel"]) as action_panel:
                             with gr.Row(elem_classes=["page-footer-actions"]):
@@ -1116,7 +1276,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 # -------------------------------------------------
                 # ДОСТИЖЕНИЯ
                 # -------------------------------------------------
-                with gr.Column(visible=False, elem_classes=["content-view", "main-tab-view"]) as achievements_container:
+                with gr.Column(visible=True, elem_id="employee-tab-achievements", elem_classes=["content-view", "main-tab-view"]) as achievements_container:
                     achievements_html = gr.HTML(
                         value="""
                             <div class="page-card">
@@ -1131,7 +1291,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 # -------------------------------------------------
                 # МАГАЗИН
                 # -------------------------------------------------
-                with gr.Column(visible=False, elem_classes=["content-view", "main-tab-view"]) as store_container:
+                with gr.Column(visible=True, elem_id="employee-tab-store", elem_classes=["content-view", "main-tab-view"]) as store_container:
                     store_html = gr.HTML(
                         value="""
                             <div class="page-card">
@@ -1208,7 +1368,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 # -------------------------------------------------
                 # УВЕДОМЛЕНИЯ
                 # -------------------------------------------------
-                with gr.Column(visible=False, elem_classes=["content-view", "main-tab-view"]) as notifications_container:
+                with gr.Column(visible=True, elem_id="employee-tab-notifications", elem_classes=["content-view", "main-tab-view"]) as notifications_container:
                     notifications_html = gr.HTML(
                         value="""
                             <div class="page-card">
@@ -1252,10 +1412,11 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
         form_submit_enabled_state = gr.State(False)
         form_unavailable_reason_state = gr.State("")
 
-        nav_change_event = nav_radio.change(
+        nav_radio.change(
             fn=_switch_employee_tab,
-            inputs=nav_radio,
+            inputs=[nav_radio],
             outputs=[
+                active_tab_style,
                 personal_container,
                 achievements_container,
                 store_container,
@@ -1267,13 +1428,15 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 description_text,
                 attachment_file,
             ],
+            queue=False,
             show_progress="hidden",
-        )
-
-        nav_change_event.then(
-            fn=_refresh_store_when_needed,
-            inputs=[nav_radio, auth_state, store_items_state],
+        ).then(
+            fn=_refresh_active_employee_tab,
+            inputs=[nav_radio, auth_state, store_items_state, notification_items_state],
             outputs=[
+                personal_page_feedback,
+                personal_resume_html,
+                achievements_html,
                 store_html,
                 store_feedback_html,
                 store_items_state,
@@ -1283,22 +1446,10 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 purchase_insufficient_row,
                 purchase_confirm_row,
                 *store_slot_outputs,
-            ],
-            show_progress="hidden",
-        ).then(
-            fn=_refresh_notifications_when_needed,
-            inputs=[nav_radio, auth_state, notification_items_state],
-            outputs=[
                 notifications_html,
                 notifications_feedback_html,
                 notification_items_state,
-                *sum(
-                    [
-                        [notification_slot_containers[i], notification_card_html_components[i], notification_read_buttons[i]]
-                        for i in range(MAX_NOTIFICATION_SLOTS)
-                    ],
-                    [],
-                ),
+                *notification_slot_outputs,
             ],
             show_progress="hidden",
         )
@@ -1476,6 +1627,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
     return {
         "container": container,
         "logout_button": logout_button,
+        "active_tab_style": active_tab_style,
         "header_html": header_html,
         "nav_radio": nav_radio,
         "personal_container": personal_container,
@@ -1499,4 +1651,9 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
         "action_panel": action_panel,
         "form_container": form_container,
         "form_feedback": form_feedback,
+        "store_feedback_html": store_feedback_html,
+        "notifications_feedback_html": notifications_feedback_html,
+        "store_items_state": store_items_state,
+        "notification_items_state": notification_items_state,
+        "purchase_intent_state": purchase_intent_state,
     }

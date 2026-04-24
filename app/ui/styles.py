@@ -896,4 +896,35 @@ APP_CSS = """
     color: #24324D !important;
     background: #FFFFFF !important;
 }
+
+.notification-card--expanded {
+    border-color: #4d7de8;
+    background: linear-gradient(180deg, #ffffff 0%, #f6f9ff 100%);
+}
+
+.notification-actions-row {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 12px !important;
+    align-items: stretch !important;
+    margin-top: 14px !important;
+}
+
+.notification-action-button {
+    min-width: 220px !important;
+    flex: 1 1 220px !important;
+}
+
+.notification-action-button button,
+.notification-action-button a {
+    width: 100% !important;
+    min-height: 46px !important;
+    white-space: normal !important;
+}
+
+.hr-notification-slot .feedback-box,
+.notification-slot .feedback-box {
+    margin-top: 12px;
+    margin-bottom: 12px;
+}
 """

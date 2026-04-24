@@ -225,12 +225,7 @@ class AchievementEngineService:
 
     def _evaluate_resume_update_quarter(self, repo: AchievementRepository, catalog_by_code: dict, employee_user_id: int) -> None:
         """
-        Правила квартальной активности:
-        - 1-2 обновления -> Навыки в актуальном состоянии
-        - 3-5 обновлений -> Активный участник
-        - 6+ обновлений  -> Когда ты всё это успел
-
-        В одном квартале выдаётся только одно из трёх.
+        Правила квартальной активности по обновлению резюме.
         """
         quarter_start = self._current_quarter_start()
         quarter_key = self._current_quarter_key()
@@ -240,38 +235,38 @@ class AchievementEngineService:
             period_start=quarter_start,
         )
 
-        if update_count >= 6:
+        if update_count <= 0:
+            return
+
+        quarter_award_key = f"quarter:{quarter_key}"
+        rule_snapshot_base = {
+            "quarter": quarter_key,
+            "resume_updates_count": update_count,
+        }
+
+        cumulative_rules = [
+            ("SKILLS_UP_TO_DATE", 1),
+            ("ACTIVE_PARTICIPANT", 3),
+            ("HOW_DID_YOU_MANAGE_IT", 6),
+        ]
+
+        for achievement_code, threshold_value in cumulative_rules:
+            if update_count < threshold_value:
+                continue
+
             self._award_if_missing(
                 repo=repo,
                 catalog_by_code=catalog_by_code,
                 employee_user_id=employee_user_id,
-                achievement_code="HOW_DID_YOU_MANAGE_IT",
-                award_key=f"quarter:{quarter_key}",
+                achievement_code=achievement_code,
+                award_key=quarter_award_key,
                 source_entity_type="resume_change_requests",
                 source_entity_id=None,
-                rule_snapshot={"quarter": quarter_key, "resume_updates_count": update_count},
-            )
-        elif 3 <= update_count <= 5:
-            self._award_if_missing(
-                repo=repo,
-                catalog_by_code=catalog_by_code,
-                employee_user_id=employee_user_id,
-                achievement_code="ACTIVE_PARTICIPANT",
-                award_key=f"quarter:{quarter_key}",
-                source_entity_type="resume_change_requests",
-                source_entity_id=None,
-                rule_snapshot={"quarter": quarter_key, "resume_updates_count": update_count},
-            )
-        elif 1 <= update_count <= 2:
-            self._award_if_missing(
-                repo=repo,
-                catalog_by_code=catalog_by_code,
-                employee_user_id=employee_user_id,
-                achievement_code="SKILLS_UP_TO_DATE",
-                award_key=f"quarter:{quarter_key}",
-                source_entity_type="resume_change_requests",
-                source_entity_id=None,
-                rule_snapshot={"quarter": quarter_key, "resume_updates_count": update_count},
+                rule_snapshot={
+                    **rule_snapshot_base,
+                    "threshold": threshold_value,
+                    "evaluation_mode": "cumulative_quarter_threshold",
+                },
             )
 
     def _evaluate_service_anniversary(self, repo: AchievementRepository, catalog_by_code: dict, employee_user_id: int) -> None:
