@@ -349,19 +349,26 @@ def _store_slot_updates_from_dashboard(store_dashboard):
     for slot_index in range(MAX_STORE_SLOTS):
         if slot_index < len(state_items):
             item = state_items[slot_index]
+
             updates.extend(
                 [
                     gr.update(visible=True),
                     _render_store_bonus_card_html(item),
-                    gr.update(visible=True, interactive=True),
+                    gr.update(
+                        visible=True,
+                        interactive=True,
+                    ),
                 ]
             )
         else:
             updates.extend(
                 [
-                    gr.update(visible=True),
-                    _render_store_placeholder_card_html(),
-                    gr.update(visible=False, interactive=False),
+                    gr.update(visible=False),
+                    "", 
+                    gr.update(
+                        visible=False,
+                        interactive=False,
+                    ),
                 ]
             )
 
@@ -457,6 +464,9 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
             "section_choices": [],
             "form_submit_enabled": False,
             "form_unavailable_reason": "Пользователь не авторизован как сотрудник.",
+            "store_items_state": [],
+            "notification_items_state": [],
+            "purchase_intent_state": None,
         }
 
     personal_data = PERSONAL_DATA_SERVICE.get_personal_data(auth_session.user_id)
@@ -501,6 +511,9 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
         "section_choices": section_choices,
         "form_submit_enabled": form_submit_enabled,
         "form_unavailable_reason": _build_form_unavailable_reason(personal_data, section_choices),
+        "store_items_state": _store_state_items_from_dashboard(store_dashboard),
+        "notification_items_state": _notification_state_items_from_dashboard(notification_dashboard),
+        "purchase_intent_state": None,
     }
 
 
@@ -545,6 +558,12 @@ def get_employee_screen_reset_payload() -> dict:
         "section_choices": [],
         "form_submit_enabled": False,
         "form_unavailable_reason": "Сессия отсутствует.",
+        "store_items_state": [],
+        "notification_items_state": [],
+        "purchase_intent_state": None,
+        "store_items_state": [],
+        "notification_items_state": [],
+        "purchase_intent_state": None,
     }
 
 
@@ -563,7 +582,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             gr.update(visible=True),
             gr.update(visible=True),
             gr.update(visible=is_personal_tab),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
             "",
             gr.update(value=None),
             gr.update(value=""),
@@ -607,6 +626,25 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             *store_updates,
             *notification_updates,
         )
+        
+    def _switch_and_refresh_employee_tab(
+        selected_tab_code: str,
+        auth_state_dict: dict | None,
+        current_store_items_state: list[dict] | None,
+        current_notification_items_state: list[dict] | None,
+    ):
+        """
+        Переключает вкладку и обновляет данные в одном Gradio-событии.
+        """
+        return (
+            *_switch_employee_tab(selected_tab_code),
+            *_refresh_active_employee_tab(
+                selected_tab_code=selected_tab_code,
+                auth_state_dict=auth_state_dict,
+                current_store_items_state=current_store_items_state,
+                current_notification_items_state=current_notification_items_state,
+            ),
+        )
 
     def _open_form(auth_state_dict: dict | None):
         auth_session = AuthSession.from_state(auth_state_dict)
@@ -649,7 +687,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
     def _cancel_form():
         return (
             gr.update(visible=True),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
             "",
             gr.update(value=None),
             gr.update(value=""),
@@ -714,7 +752,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
         if result.success:
             return (
                 gr.update(visible=True),
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
                 _render_feedback_html(result.message, "success"),
                 "",
                 gr.update(value=None),
@@ -833,8 +871,8 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             for _ in range(MAX_STORE_SLOTS):
                 empty_updates.extend(
                     [
-                        gr.update(visible=True),
-                        _render_store_placeholder_card_html(),
+                        gr.update(visible=False),
+                        "",
                         gr.update(visible=False, interactive=False),
                     ]
                 )
@@ -948,21 +986,26 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             return (
                 _render_feedback_html("Сначала выполните вход в систему.", "error"),
                 None,
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
                 "",
-                gr.update(visible=False),
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
+                gr.update(visible="hidden"),
             )
 
         items = store_items_state or []
+
+        if not items and auth_session.user_id:
+            store_dashboard = STORE_SERVICE.get_dashboard(int(auth_session.user_id))
+            items = _store_state_items_from_dashboard(store_dashboard)
+
         if slot_index < 0 or slot_index >= len(items):
             return (
                 _render_feedback_html("Выбранный бонус не найден в текущем каталоге.", "error"),
                 None,
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
                 "",
-                gr.update(visible=False),
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
+                gr.update(visible="hidden"),
             )
 
         item = items[slot_index]
@@ -981,7 +1024,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 gr.update(visible=True),
                 _render_feedback_html(message, "error"),
                 gr.update(visible=True),
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
             )
 
         future_balance = points_snapshot - cost_points
@@ -1004,17 +1047,17 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             purchase_intent_state,
             gr.update(visible=True),
             _render_feedback_html(message, "info"),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
             gr.update(visible=True),
         )
 
     def _close_purchase_panel():
         return (
             None,
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
             "",
-            gr.update(visible=False),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
+            gr.update(visible="hidden"),
         )
 
     def _confirm_bonus_purchase(
@@ -1091,10 +1134,10 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             _render_store_summary_html(store_dashboard),
             _render_feedback_html(result.message, feedback_kind),
             None,
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
             "",
-            gr.update(visible=False),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
+            gr.update(visible="hidden"),
             state_items,
             *slot_updates,
         )
@@ -1227,7 +1270,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                                 )
 
                         with gr.Column(
-                            visible=False,
+                            visible="hidden",
                             elem_classes=["resume-change-form", "runtime-form-panel"],
                         ) as form_container:
                             gr.HTML(
@@ -1308,18 +1351,18 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                     purchase_intent_state = gr.State(None)
 
                     with gr.Column(
-                        visible=False,
+                        visible="hidden",
                         elem_classes=["page-card", "store-purchase-panel"],
                     ) as purchase_panel:
                         purchase_message_html = gr.HTML(value="")
 
-                        with gr.Row(visible=False, elem_classes=["form-actions-row"]) as purchase_insufficient_row:
+                        with gr.Row(visible="hidden", elem_classes=["form-actions-row"]) as purchase_insufficient_row:
                             insufficient_cancel_button = gr.Button(
                                 value="Отменить",
                                 elem_classes=["form-cancel-button"],
                             )
 
-                        with gr.Row(visible=False, elem_classes=["form-actions-row"]) as purchase_confirm_row:
+                        with gr.Row(visible="hidden", elem_classes=["form-actions-row"]) as purchase_confirm_row:
                             confirm_purchase_button = gr.Button(
                                 value="Подтверждаю",
                                 elem_classes=["form-submit-button"],
@@ -1413,8 +1456,8 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
         form_unavailable_reason_state = gr.State("")
 
         nav_radio.change(
-            fn=_switch_employee_tab,
-            inputs=[nav_radio],
+            fn=_switch_and_refresh_employee_tab,
+            inputs=[nav_radio, auth_state, store_items_state, notification_items_state],
             outputs=[
                 active_tab_style,
                 personal_container,
@@ -1427,16 +1470,11 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 section_dropdown,
                 description_text,
                 attachment_file,
-            ],
-            queue=False,
-            show_progress="hidden",
-        ).then(
-            fn=_refresh_active_employee_tab,
-            inputs=[nav_radio, auth_state, store_items_state, notification_items_state],
-            outputs=[
+
                 personal_page_feedback,
                 personal_resume_html,
                 achievements_html,
+
                 store_html,
                 store_feedback_html,
                 store_items_state,
@@ -1451,35 +1489,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 notification_items_state,
                 *notification_slot_outputs,
             ],
-            show_progress="hidden",
-        )
-
-        auth_state.change(
-            fn=_prime_store_from_auth,
-            inputs=[auth_state],
-            outputs=[
-                store_html,
-                store_feedback_html,
-                store_items_state,
-                purchase_intent_state,
-                purchase_panel,
-                purchase_message_html,
-                purchase_insufficient_row,
-                purchase_confirm_row,
-                *store_slot_outputs,
-            ],
-            show_progress="hidden",
-        )
-
-        auth_state.change(
-            fn=_prime_notifications_from_auth,
-            inputs=[auth_state],
-            outputs=[
-                notifications_html,
-                notifications_feedback_html,
-                notification_items_state,
-                *notification_slot_outputs,
-            ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1501,6 +1511,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 form_submit_enabled_state,
                 form_unavailable_reason_state,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1518,6 +1529,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 form_submit_enabled_state,
                 form_unavailable_reason_state,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1543,6 +1555,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 form_submit_enabled_state,
                 form_unavailable_reason_state,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1561,6 +1574,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                     purchase_insufficient_row,
                     purchase_confirm_row,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 
@@ -1574,6 +1588,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 purchase_insufficient_row,
                 purchase_confirm_row,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1587,6 +1602,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 purchase_insufficient_row,
                 purchase_confirm_row,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1605,6 +1621,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 store_items_state,
                 *store_slot_outputs,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1621,6 +1638,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                     notification_items_state,
                     *notification_slot_outputs,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 

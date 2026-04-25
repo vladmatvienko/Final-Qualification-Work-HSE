@@ -96,4 +96,12 @@ AUTH_CSS = """
 #employee-root > .column:last-child {
     margin-top: 0 !important;
 }
+
+.hr-notification-slot:empty {
+    display: none !important;
+}
+
+.hr-notification-slot[style*="visibility: hidden"] {
+    display: none !important;
+}
 """

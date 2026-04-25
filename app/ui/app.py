@@ -179,6 +179,9 @@ def create_app() -> gr.Blocks:
     }
 
     employee_alias_map: dict[str, tuple[str, str]] = {
+        "store_items_state": ("store_items_state", "value"),
+        "notification_items_state": ("notification_items_state", "value"),
+        "purchase_intent_state": ("purchase_intent_state", "value"),
     }
 
     with gr.Blocks(title=settings.app_title) as demo:

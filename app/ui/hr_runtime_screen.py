@@ -299,6 +299,45 @@ def _get_item_identity(item: HRNotificationCardViewModel | None) -> tuple[str, i
     return (item.source_type_code, item.queue_record_id)
 
 
+def _mark_item_state_as_processed(item: HRNotificationCardViewModel) -> dict:
+    """
+    Возвращает state карточки сразу после успешной обработки.
+    Нужен, чтобы UI не переиспользовал старый статус, если текущий фильтр
+    скрывает archived-уведомления из свежей выборки.
+    """
+    item_state = asdict(item)
+    item_state["queue_status_code"] = "archived"
+    item_state["queue_status_label"] = "Обработано"
+    item_state["can_mark_processed"] = False
+    return item_state
+
+
+def _mark_item_state_as_read(item: HRNotificationCardViewModel) -> dict:
+    """
+    Возвращает state карточки после открытия деталей. Archived-уведомления
+    не откатываем визуально в read.
+    """
+    item_state = asdict(item)
+    if item.queue_status_code == "unread":
+        item_state["queue_status_code"] = "read"
+        item_state["queue_status_label"] = "Прочитано"
+    item_state["can_mark_processed"] = item_state.get("queue_status_code") != "archived"
+    return item_state
+
+
+def _mark_item_state_as_reminder_sent(item: HRNotificationCardViewModel) -> dict:
+    """
+    Возвращает state карточки после успешной отправки напоминания сотруднику.
+    """
+    item_state = asdict(item)
+    item_state["business_status_code"] = "reminder_sent"
+    item_state["business_status_label"] = "Напоминание отправлено"
+    item_state["can_send_reminder"] = False
+    item_state["reminder_sent"] = True
+    item_state["reminder_needed_label"] = "Напоминание уже отправлено"
+    return item_state
+
+
 def _preserve_items_order(
     previous_items_state: list[dict] | None,
     fresh_items_state: list[dict],
@@ -436,13 +475,13 @@ def _build_inline_slot_updates(
                     [
                         gr.update(visible=False),
                         gr.update(value=""),
-                        gr.update(visible=False),
+                        gr.update(visible="hidden"),
                         gr.update(visible=False),
                         gr.update(value=""),
-                        gr.update(visible=False),
-                        gr.update(visible=False),
-                        gr.update(visible=False),
-                        gr.update(visible=False, value=None),
+                        gr.update(visible="hidden"),
+                        gr.update(visible="hidden"),
+                        gr.update(visible="hidden"),
+                        gr.update(visible="hidden", value=None),
                     ]
                 )
                 continue
@@ -477,13 +516,13 @@ def _build_inline_slot_updates(
                 [
                     gr.update(visible=False),
                     gr.update(value=""),
-                    gr.update(visible=False),
+                    gr.update(visible="hidden"),
                     gr.update(visible=False),
                     gr.update(value=""),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
-                    gr.update(visible=False, value=None),
+                    gr.update(visible="hidden"),
+                    gr.update(visible="hidden"),
+                    gr.update(visible="hidden"),
+                    gr.update(visible="hidden", value=None),
                 ]
             )
 
@@ -655,6 +694,24 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             gr.update(visible=(selected_tab_code == TAB_RATING)),
             gr.update(visible=(selected_tab_code == TAB_NOTIFICATIONS)),
         ]
+    
+    def _switch_and_refresh_hr_tab(
+        selected_tab_code: str,
+        auth_state_dict: dict | None,
+        type_filter: str,
+        status_filter: str,
+    ):
+        """
+        Переключает вкладку и обновляет HR-уведомления в одном Gradio-событии.
+        """
+        return (
+            *_switch_hr_tab(selected_tab_code),
+            *_refresh_notifications(
+                auth_state_dict=auth_state_dict,
+                type_filter=type_filter,
+                status_filter=status_filter,
+            ),
+        )
 
     def _pin_selected_item_if_filtered_out(
         items_state: list[dict],
@@ -713,8 +770,8 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                 None,
                 gr.update(visible=False),
                 "",
-                gr.update(visible=False),
-                gr.update(visible=False),
+                gr.update(visible="hidden"),
+                gr.update(visible="hidden"),
                 *_build_inline_slot_updates([], None),
             )
 
@@ -772,8 +829,8 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             actual_selected_state,
             gr.update(visible=False),
             "",
-            gr.update(visible=False),
-            gr.update(visible=False),
+            gr.update(visible="hidden"),
+            gr.update(visible="hidden"),
             *_build_inline_slot_updates(items_state, actual_selected_state, inline_feedback_html),
         )
 
@@ -807,6 +864,14 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
         """
         auth_session = AuthSession.from_state(auth_state_dict)
         safe_items_state = items_state or []
+
+        if auth_session.is_authenticated and auth_session.role == "hr" and not safe_items_state:
+            dashboard = hr_notification_service.get_dashboard(
+                hr_user_id=int(auth_session.user_id or 0),
+                type_filter=type_filter,
+                status_filter=status_filter,
+            )
+            safe_items_state = _serialize_items(dashboard.items)
 
         if not auth_session.is_authenticated or auth_session.role != "hr":
             return _compose_notifications_response(
@@ -916,13 +981,19 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             queue_record_id=selected_item.queue_record_id,
         )
 
+        selected_item_state = (
+            _mark_item_state_as_processed(selected_item)
+            if result.success
+            else asdict(selected_item)
+        )
+
         return _compose_notifications_response(
             auth_state_dict=auth_state_dict,
             type_filter=type_filter,
             status_filter=status_filter,
             feedback_message=result.message,
             feedback_kind="success" if result.success else "error",
-            selected_item_state=asdict(selected_item),
+            selected_item_state=selected_item_state,
             previous_items_state=safe_items_state,
         )
 
@@ -989,13 +1060,19 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             queue_record_id=selected_item.queue_record_id,
         )
 
+        selected_item_state = (
+            _mark_item_state_as_reminder_sent(selected_item)
+            if result.success
+            else asdict(selected_item)
+        )
+
         return _compose_notifications_response(
             auth_state_dict=auth_state_dict,
             type_filter=type_filter,
             status_filter=status_filter,
             feedback_message=result.message,
             feedback_kind="success" if result.success else "error",
-            selected_item_state=asdict(selected_item),
+            selected_item_state=selected_item_state,
             previous_items_state=safe_items_state,
         )
 
@@ -1098,7 +1175,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                     notification_items_state = gr.State([])
                     selected_notification_state = gr.State(None)
 
-                    with gr.Column(visible=False) as notification_detail_panel:
+                    with gr.Column(visible="hidden") as notification_detail_panel:
                         notification_detail_html = gr.HTML(value="")
                         mark_processed_button = gr.Button(value="legacy", visible=False)
                         send_reminder_button = gr.Button(value="legacy", visible=False)
@@ -1119,36 +1196,36 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
 
                             notification_open_button = gr.Button(
                                 f"Открыть подробности #{index + 1}",
-                                visible=False,
+                                visible="hidden",
                                 elem_classes=["action-button"],
                             )
 
-                            with gr.Column(visible=False) as inline_detail_container:
+                            with gr.Column(visible="hidden") as inline_detail_container:
                                 inline_detail_html = gr.HTML(value="")
 
                                 with gr.Row(elem_classes=["notification-actions-row"]):
                                     mark_button = gr.Button(
                                         "Отметить как обработано",
-                                        visible=False,
+                                        visible="hidden",
                                         elem_classes=["action-button", "notification-action-button"],
                                     )
 
                                     reminder_button = gr.Button(
                                         "Отправить напоминание сотруднику",
-                                        visible=False,
+                                        visible="hidden",
                                         elem_classes=["action-button", "notification-action-button"],
                                     )
 
                                     download_button = gr.DownloadButton(
                                         label="Скачать файл",
                                         value=None,
-                                        visible=False,
+                                        visible="hidden",
                                         elem_classes=["action-button", "notification-action-button"],
                                     )
 
                                     close_button = gr.Button(
                                         "Закрыть",
-                                        visible=False,
+                                        visible="hidden",
                                         elem_classes=["form-cancel-button", "notification-action-button"],
                                     )
 
@@ -1174,33 +1251,18 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
             slot_download_buttons=notification_download_buttons,
         )
 
-        auth_state.change(
-            fn=_prime_notifications_from_auth,
-            inputs=[auth_state],
-            outputs=[
-                header_html,
-                notifications_html,
-                notifications_feedback_html,
-                notification_items_state,
-                selected_notification_state,
-                notification_detail_panel,
-                notification_detail_html,
-                mark_processed_button,
-                send_reminder_button,
-                *inline_slot_outputs,
-            ],
-            show_progress="hidden",
-        )
-
         nav_radio.change(
-            fn=_switch_hr_tab,
-            inputs=[nav_radio],
-            outputs=[rating_container, notifications_container],
-            show_progress="hidden",
-        ).then(
-            fn=_refresh_notifications,
-            inputs=[auth_state, notifications_filter_type, notifications_filter_status],
+            fn=_switch_and_refresh_hr_tab,
+            inputs=[
+                nav_radio,
+                auth_state,
+                notifications_filter_type,
+                notifications_filter_status,
+            ],
             outputs=[
+                rating_container,
+                notifications_container,
+
                 header_html,
                 notifications_html,
                 notifications_feedback_html,
@@ -1212,6 +1274,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                 send_reminder_button,
                 *inline_slot_outputs,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1230,6 +1293,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                 send_reminder_button,
                 *inline_slot_outputs,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1248,6 +1312,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                 send_reminder_button,
                 *inline_slot_outputs,
             ],
+            queue=False,
             show_progress="hidden",
         )
 
@@ -1281,6 +1346,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                     send_reminder_button,
                     *inline_slot_outputs,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 
@@ -1314,6 +1380,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                     send_reminder_button,
                     *inline_slot_outputs,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 
@@ -1347,6 +1414,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                     send_reminder_button,
                     *inline_slot_outputs,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 
@@ -1373,6 +1441,7 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
                     send_reminder_button,
                     *inline_slot_outputs,
                 ],
+                queue=False,
                 show_progress="hidden",
             )
 
@@ -1399,4 +1468,3 @@ def build_hr_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.compon
         "mark_processed_button": mark_processed_button,
         "send_reminder_button": send_reminder_button,
     }
-
