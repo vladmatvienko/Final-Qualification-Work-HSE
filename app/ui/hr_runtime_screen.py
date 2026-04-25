@@ -268,7 +268,13 @@ def _deserialize_item(item_state: dict | None) -> HRNotificationCardViewModel | 
     """
     if not item_state:
         return None
-    return HRNotificationCardViewModel(**item_state)
+
+    normalized_state = dict(item_state)
+
+    if normalized_state.get("source_type_code") != "course_expiry":
+        normalized_state["can_send_reminder"] = False
+
+    return HRNotificationCardViewModel(**normalized_state)
 
 
 def _find_item_by_identity(
@@ -429,6 +435,9 @@ def _should_show_send_reminder(item: HRNotificationCardViewModel, is_selected: b
     Напоминание можно отправлять только у выбранного уведомления об истекающем курсе.
     """
     if not is_selected:
+        return False
+
+    if item.source_type_code != "course_expiry":
         return False
 
     return bool(item.can_send_reminder)

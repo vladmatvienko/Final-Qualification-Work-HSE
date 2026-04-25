@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import date, datetime, time
 from decimal import Decimal
 from html import escape
@@ -95,10 +96,11 @@ class HRResumeDocumentBuilder:
     # =========================================================
     def _build_anonymous_code(self, source: CandidateSearchIndexSource) -> str:
         """
-        Строит стабильный анонимный код кандидата только от employee_user_id.
+        Строит анонимный код кандидата.
         """
-        raw = f"employee:{source.employee_user_id}"
-        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8].upper()
+        salt = os.getenv("ANONYMIZATION_SALT", "elbrus-local-anonymization-salt").strip()
+        raw = f"{salt}:employee:{source.employee_user_id}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10].upper()
         return f"CAND-{digest}"
 
     # =========================================================
@@ -307,6 +309,9 @@ class HRResumeDocumentBuilder:
     # Дипломы
     # =========================================================
     def _extract_diploma_items(self, source: CandidateSearchIndexSource) -> list[str]:
+        """
+        Дипломы для HR-профиля без серии, номера, имени файла и иных deanonymizing-атрибутов.
+        """
         items: list[str] = []
 
         for row in self._to_list(source.diploma_rows):
@@ -318,28 +323,19 @@ class HRResumeDocumentBuilder:
                 or row.get("diploma_name")
                 or row.get("title")
             )
-            series = self._safe_text(row.get("diploma_series") or row.get("series"))
-            number = self._safe_text(row.get("diploma_number") or row.get("number"))
             honors_type = self._safe_text(row.get("honors_type"))
-            issued_at = self._safe_text(
+            issued_year = self._safe_year(
                 row.get("issued_at")
                 or row.get("issue_date")
             )
-            original_filename = self._safe_text(row.get("original_filename"))
 
             line_parts: list[str] = []
             if qualification_title:
                 line_parts.append(qualification_title)
-            if series:
-                line_parts.append(f"Серия: {series}")
-            if number:
-                line_parts.append(f"Номер: {number}")
             if honors_type:
                 line_parts.append(f"Отличие: {honors_type}")
-            if issued_at:
-                line_parts.append(f"Дата выдачи: {issued_at}")
-            if original_filename:
-                line_parts.append(f"Файл: {original_filename}")
+            if issued_year:
+                line_parts.append(f"Год выдачи: {issued_year}")
 
             line = " • ".join(part for part in line_parts if part)
             if line:
@@ -412,34 +408,112 @@ class HRResumeDocumentBuilder:
     ) -> dict[str, Any]:
         profile = self._as_dict(source.profile_data)
 
+        sanitized_profile = self._sanitize_profile_data(profile)
+
         payload = {
             "employee_user_id": source.employee_user_id,
             "anonymous_code": anonymous_code,
-            "full_name": self._safe_text(source.full_name),
+            "full_name": anonymous_code,
+
             "current_position": self._safe_text(
-                profile.get("current_position")
-                or profile.get("position")
-                or profile.get("job_title")
-                or profile.get("specialization")
+                sanitized_profile.get("current_position")
+                or sanitized_profile.get("position")
+                or sanitized_profile.get("job_title")
+                or sanitized_profile.get("specialization")
             ),
             "summary": self._safe_text(
-                profile.get("summary")
-                or profile.get("about_work")
-                or profile.get("professional_summary")
-                or profile.get("about")
+                sanitized_profile.get("summary")
+                or sanitized_profile.get("about_work")
+                or sanitized_profile.get("professional_summary")
             ),
+
             "profile_text": profile_text,
             "skills_text": skills_text,
             "experience_text": experience_text,
             "education_text": education_text,
             "courses_text": courses_text,
-            "profile_data": source.profile_data,
-            "skill_rows": self._to_list(source.skill_rows),
-            "work_experience_rows": self._to_list(source.work_experience_rows),
-            "education_rows": self._to_list(source.education_rows),
-            "diploma_rows": self._to_list(source.diploma_rows),
-            "additional_course_rows": self._to_list(source.additional_course_rows),
-            "qualification_course_rows": self._to_list(source.qualification_course_rows),
+
+            "profile_data": sanitized_profile,
+
+            "skill_rows": self._sanitize_rows(
+                self._to_list(source.skill_rows),
+                {
+                    "skill_name",
+                    "name",
+                    "title",
+                    "competency_name",
+                    "proficiency_level",
+                    "years_experience",
+                },
+            ),
+            "work_experience_rows": self._sanitize_rows(
+                self._to_list(source.work_experience_rows),
+                {
+                    "position",
+                    "position_title",
+                    "job_title",
+                    "role_name",
+                    "start_date",
+                    "end_date",
+                    "date_from",
+                    "date_to",
+                    "responsibilities",
+                    "description",
+                    "result_text",
+                },
+            ),
+            "education_rows": self._sanitize_rows(
+                self._to_list(source.education_rows),
+                {
+                    "education_level",
+                    "degree",
+                    "qualification",
+                    "specialty",
+                    "specialization",
+                    "faculty",
+                    "graduation_year",
+                    "end_date",
+                    "date_to",
+                },
+            ),
+            "diploma_rows": self._sanitize_rows(
+                self._to_list(source.diploma_rows),
+                {
+                    "qualification_title",
+                    "diploma_name",
+                    "title",
+                    "honors_type",
+                    "issued_at",
+                    "issue_date",
+                },
+            ),
+            "additional_course_rows": self._sanitize_rows(
+                self._to_list(source.additional_course_rows),
+                {
+                    "course_name",
+                    "program_name",
+                    "title",
+                    "provider_name",
+                    "organization_name",
+                    "completed_at",
+                    "status",
+                },
+            ),
+            "qualification_course_rows": self._sanitize_rows(
+                self._to_list(source.qualification_course_rows),
+                {
+                    "course_name",
+                    "program_name",
+                    "title",
+                    "provider_name",
+                    "organization_name",
+                    "completed_at",
+                    "valid_until",
+                    "end_date",
+                    "date_to",
+                    "status",
+                },
+            ),
         }
 
         return self._to_json_safe(payload)
@@ -506,7 +580,7 @@ class HRResumeDocumentBuilder:
         return CandidateSearchDocument(
             employee_user_id=source.employee_user_id,
             anonymous_code=anonymous_code,
-            full_name=self._safe_text(source.full_name),
+            full_name=anonymous_code,
             source_hash=source_hash,
             profile_text=profile_text,
             skills_text=skills_text,
@@ -852,3 +926,64 @@ class HRResumeDocumentBuilder:
     def render_resume(self, *args, **kwargs) -> str:
         document = self._extract_document(*args, **kwargs)
         return self._build_html(document)
+
+    def _safe_year(self, value: Any) -> str:
+        raw = self._safe_text(value)
+        if not raw:
+            return ""
+
+        if len(raw) >= 4 and raw[:4].isdigit():
+            return raw[:4]
+
+        return raw
+
+
+    def _sanitize_rows(
+        self,
+        rows: list[dict[str, Any]],
+        allowed_keys: set[str],
+    ) -> list[dict[str, Any]]:
+        """
+        Оставляет только whitelisted-поля для HR payload.
+        """
+        sanitized_rows: list[dict[str, Any]] = []
+
+        for row in self._to_list(rows):
+            if not isinstance(row, dict):
+                continue
+
+            sanitized_row = {
+                key: value
+                for key, value in row.items()
+                if key in allowed_keys and value is not None and self._safe_text(value)
+            }
+
+            if sanitized_row:
+                sanitized_rows.append(sanitized_row)
+
+        return sanitized_rows
+
+
+    def _sanitize_profile_data(self, profile: dict[str, Any]) -> dict[str, Any]:
+        allowed_keys = {
+            "current_position",
+            "position",
+            "job_title",
+            "specialization",
+            "target_position",
+            "department",
+            "division",
+            "team_name",
+            "summary",
+            "about_work",
+            "professional_summary",
+            "skills",
+            "key_skills",
+            "stack",
+        }
+
+        return {
+            key: value
+            for key, value in profile.items()
+            if key in allowed_keys and value is not None and self._safe_text(value)
+        }

@@ -15,7 +15,6 @@ from app.models.employee_view_models import (
     TAB_STORE,
 )
 from app.services.employee_achievement_service import EmployeeAchievementService
-from app.services.employee_mock_service import get_mock_employee_dashboard
 from app.services.employee_notification_service import EmployeeNotificationService
 from app.services.employee_personal_data_service import EmployeePersonalDataService
 from app.services.employee_store_service import EmployeeStoreService
@@ -421,7 +420,6 @@ def _notification_slot_updates_from_dashboard(notification_dashboard):
 
 def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
     auth_session = AuthSession.from_state(auth_state_dict)
-    mock_dashboard = get_mock_employee_dashboard()
 
     if not auth_session.is_authenticated or auth_session.role != "employee" or not auth_session.user_id:
         return {
@@ -474,7 +472,7 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
     store_dashboard = STORE_SERVICE.get_dashboard(auth_session.user_id)
     notification_dashboard = NOTIFICATION_SERVICE.get_dashboard(auth_session.user_id)
 
-    full_name = personal_data.full_name or auth_session.full_name or mock_dashboard.full_name
+    full_name = personal_data.full_name or auth_session.full_name
 
     section_choices = [
         (option.label, str(option.section_id))

@@ -5,7 +5,7 @@ Retrieval-слой stage 9 на Hugging Face embeddings.
 """
 
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -13,7 +13,7 @@ from app.models.candidate_search_models import CandidateRetrievalHit, CandidateS
 from app.services.hf_local_models import (
     get_embedding_model,
     get_hf_batch_size,
-    get_hf_top_k,
+    get_hf_retrieval_top_k,
     should_normalize_embeddings,
 )
 
@@ -26,9 +26,6 @@ class HRCandidateRetrievalService:
     TOKEN_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё0-9_+#./-]{2,}")
 
     def _tokenize(self, text: str) -> set[str]:
-        """
-        Простая токенизация для UI-совпадений по секциям.
-        """
         if not text:
             return set()
 
@@ -38,10 +35,47 @@ class HRCandidateRetrievalService:
             if token and len(token.strip()) >= 2
         }
 
+    def _as_text_items(self, value: Any) -> list[str]:
+        """
+        Приводит list[str] / list[dict] / str к списку человекочитаемых строк.
+        """
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+
+        if not isinstance(value, list):
+            return [str(value)] if str(value).strip() else []
+
+        result: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+
+            if isinstance(item, str):
+                text_value = item.strip()
+                if text_value:
+                    result.append(text_value)
+                continue
+
+            if isinstance(item, dict):
+                parts = [
+                    str(raw).strip()
+                    for raw in item.values()
+                    if raw is not None and str(raw).strip()
+                ]
+                if parts:
+                    result.append(" • ".join(parts))
+                continue
+
+            text_value = str(item).strip()
+            if text_value:
+                result.append(text_value)
+
+        return result
+
     def _match_items(self, query_tokens: set[str], items: Iterable[str]) -> list[str]:
-        """
-        Возвращает top совпавших элементов из конкретной секции резюме.
-        """
         scored_items: list[tuple[float, str]] = []
 
         for item in items:
@@ -72,26 +106,36 @@ class HRCandidateRetrievalService:
         query_tokens = self._tokenize(requirements_text)
         payload = document.structured_payload or {}
 
-        skills = payload.get("skills", []) or []
-        experiences = payload.get("work_experiences", []) or []
-        educations = payload.get("educations", []) or []
-        diplomas = payload.get("diplomas", []) or []
-        additional_courses = payload.get("additional_courses", []) or []
-        qualification_courses = payload.get("qualification_courses", []) or []
-
-        matched_skills = self._match_items(query_tokens, skills)
-        matched_experience = self._match_items(query_tokens, experiences)
-        matched_learning = self._match_items(
-            query_tokens,
-            educations + diplomas + additional_courses + qualification_courses,
+        skills = (
+            self._as_text_items(payload.get("skills"))
+            + self._as_text_items(payload.get("skill_rows"))
+            + self._as_text_items(payload.get("skills_text"))
         )
 
-        return matched_skills, matched_experience, matched_learning
+        experiences = (
+            self._as_text_items(payload.get("work_experiences"))
+            + self._as_text_items(payload.get("work_experience_rows"))
+            + self._as_text_items(payload.get("experience_text"))
+        )
+
+        learning = (
+            self._as_text_items(payload.get("educations"))
+            + self._as_text_items(payload.get("education_rows"))
+            + self._as_text_items(payload.get("diplomas"))
+            + self._as_text_items(payload.get("diploma_rows"))
+            + self._as_text_items(payload.get("additional_course_rows"))
+            + self._as_text_items(payload.get("qualification_course_rows"))
+            + self._as_text_items(payload.get("education_text"))
+            + self._as_text_items(payload.get("courses_text"))
+        )
+
+        return (
+            self._match_items(query_tokens, skills),
+            self._match_items(query_tokens, experiences),
+            self._match_items(query_tokens, learning),
+        )
 
     def _encode_texts(self, texts: list[str]) -> np.ndarray:
-        """
-        Строит embeddings для списка текстов.
-        """
         model = get_embedding_model()
 
         embeddings = model.encode(
@@ -105,7 +149,23 @@ class HRCandidateRetrievalService:
         if not isinstance(embeddings, np.ndarray):
             embeddings = np.array(embeddings)
 
-        return embeddings
+        return embeddings.astype(float)
+
+    def _calculate_similarities(
+        self,
+        query_embedding: np.ndarray,
+        document_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        if should_normalize_embeddings():
+            return np.dot(document_embeddings, query_embedding)
+
+        query_norm = np.linalg.norm(query_embedding)
+        document_norms = np.linalg.norm(document_embeddings, axis=1)
+
+        denominator = document_norms * query_norm
+        denominator = np.where(denominator == 0, 1.0, denominator)
+
+        return np.dot(document_embeddings, query_embedding) / denominator
 
     def retrieve(
         self,
@@ -113,23 +173,21 @@ class HRCandidateRetrievalService:
         documents: list[CandidateSearchDocument],
         top_k: int | None = None,
     ) -> list[CandidateRetrievalHit]:
-        """
-        Главная retrieval-функция.
-        """
         normalized_text = (requirements_text or "").strip()
-        if not normalized_text:
+        if not normalized_text or not documents:
             return []
 
-        if not documents:
-            return []
-
-        effective_top_k = top_k or get_hf_top_k()
+        effective_top_k = int(top_k) if top_k is not None else get_hf_retrieval_top_k()
+        effective_top_k = max(1, effective_top_k)
 
         query_embedding = self._encode_texts([normalized_text])[0]
-        document_texts = [document.aggregated_text for document in documents]
+        document_texts = [document.aggregated_text or "" for document in documents]
         document_embeddings = self._encode_texts(document_texts)
 
-        similarities = np.dot(document_embeddings, query_embedding)
+        similarities = self._calculate_similarities(
+            query_embedding=query_embedding,
+            document_embeddings=document_embeddings,
+        )
 
         hits: list[CandidateRetrievalHit] = []
 

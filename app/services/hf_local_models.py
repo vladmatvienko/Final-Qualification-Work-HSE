@@ -25,6 +25,50 @@ def _get_env(name: str, default: str | None = None) -> str | None:
     return stripped if stripped else default
 
 
+def _get_env_any(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = _get_env(name)
+        if value is not None:
+            return value
+    return default
+
+
+def _get_env_int_any(*names: str, default: int, min_value: int = 1) -> int:
+    raw_value = _get_env_any(*names)
+    if raw_value is None:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+
+    return max(min_value, parsed)
+
+
+def get_hf_retrieval_top_k() -> int:
+
+    return _get_env_int_any(
+        "HF_TOP_K",
+        "HR_TOP_K",
+        "HR_RETRIEVAL_TOP_K",
+        default=10,
+        min_value=1,
+    )
+
+
+def get_hf_rerank_top_n_config() -> int:
+    """
+    Конфигурационное значение top_n для rerank-этапа.
+    """
+    return _get_env_int_any(
+        "HF_RERANK_TOP_N",
+        "HR_RERANK_TOP_N",
+        default=10,
+        min_value=1,
+    )
+
+
 def _normalize_text(text: str | None) -> str:
     return " ".join((text or "").strip().split())
 
@@ -124,7 +168,12 @@ def get_hf_normalize_embeddings() -> bool:
 def get_embedding_model() -> SentenceTransformer:
     _login_if_needed()
 
-    model_name = _get_env("HR_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+    model_name = _get_env_any(
+        "HF_EMBEDDING_MODEL",
+        "HR_EMBED_MODEL",
+        "SENTENCE_TRANSFORMER_MODEL",
+        default=DEFAULT_EMBED_MODEL,
+    )
     device = get_hf_device()
 
     model = SentenceTransformer(
@@ -144,7 +193,12 @@ def get_hf_embedding_model() -> SentenceTransformer:
 def get_reranker_model() -> CrossEncoder:
     _login_if_needed()
 
-    model_name = _get_env("HR_RERANK_MODEL", DEFAULT_RERANK_MODEL)
+    model_name = _get_env_any(
+        "HF_RERANKER_MODEL",
+        "HR_RERANK_MODEL",
+        "CROSS_ENCODER_MODEL",
+        default=DEFAULT_RERANK_MODEL,
+    )
     device = get_hf_device()
 
     model = CrossEncoder(

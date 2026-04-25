@@ -41,6 +41,44 @@ class _StoredFileMeta:
     file_checksum: str
     file_path_absolute: Path
 
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".jpg",
+    ".jpeg",
+    ".png",
+}
+
+ALLOWED_UPLOAD_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "image/jpeg",
+    "image/png",
+}
+
+BLOCKED_UPLOAD_EXTENSIONS = {
+    ".exe",
+    ".bat",
+    ".cmd",
+    ".com",
+    ".scr",
+    ".ps1",
+    ".sh",
+    ".js",
+    ".vbs",
+    ".msi",
+    ".dll",
+    ".php",
+    ".py",
+}
+
+BLOCKED_FILE_SIGNATURES = (
+    b"MZ",
+)
 
 class EmployeePersonalDataService:
     """
@@ -718,15 +756,70 @@ class EmployeePersonalDataService:
     # =========================================================
     # Работа с файлами
     # =========================================================
+    def _detect_mime_type(self, file_path: Path) -> str | None:
+        """
+        Определение MIME
+        """
+        guessed_mime = mimetypes.guess_type(file_path.name)[0]
+
+        with file_path.open("rb") as file_obj:
+            header = file_obj.read(16)
+
+        if header.startswith(b"%PDF"):
+            return "application/pdf"
+
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+
+        if header.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+
+        return guessed_mime
+
+
+    def _validate_uploaded_file(self, source_path: Path) -> None:
+        """
+        Fail-fast валидация файла до копирования в постоянное хранилище.
+        """
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError("Загруженный файл не найден во временной папке Gradio.")
+
+        extension = source_path.suffix.lower().strip()
+
+        if extension in BLOCKED_UPLOAD_EXTENSIONS:
+            raise ValueError("Файл такого типа нельзя прикладывать к заявке.")
+
+        if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+            allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+            raise ValueError(f"Недопустимый формат файла. Разрешены только: {allowed}.")
+
+        file_size_bytes = source_path.stat().st_size
+
+        if file_size_bytes <= 0:
+            raise ValueError("Загруженный файл пустой.")
+
+        if file_size_bytes > MAX_UPLOAD_SIZE_BYTES:
+            max_mb = MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)
+            raise ValueError(f"Файл слишком большой. Максимальный размер: {max_mb} МБ.")
+
+        with source_path.open("rb") as file_obj:
+            header = file_obj.read(16)
+
+        if any(header.startswith(signature) for signature in BLOCKED_FILE_SIGNATURES):
+            raise ValueError("Файл похож на исполняемый. Такие вложения запрещены.")
+
+        mime_type = self._detect_mime_type(source_path)
+        if mime_type and mime_type not in ALLOWED_UPLOAD_MIME_TYPES:
+            raise ValueError("MIME-тип файла не входит в список разрешённых.")
+
+
     def _store_uploaded_file(self, employee_user_id: int, source_file_path: str) -> _StoredFileMeta:
         """
-        Копирует файл из временного каталога Gradio в постоянную папку проекта.
+        Валидирует и копирует файл из временного каталога Gradio в постоянную папку проекта.
         """
-        source_path = Path(source_file_path)
-        if not source_path.exists():
-            raise OSError("Загруженный файл не найден во временной папке Gradio.")
+        source_path = Path(source_file_path).resolve()
+        self._validate_uploaded_file(source_path)
 
-        # Формируем "безопасное" имя файла.
         safe_name = self._sanitize_filename(source_path.name)
         unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}_{safe_name}"
 
@@ -734,24 +827,32 @@ class EmployeePersonalDataService:
             self.settings.uploads_root_dir
             / "resume_change_requests"
             / str(employee_user_id)
-        )
+        ).resolve()
+
         destination_dir.mkdir(parents=True, exist_ok=True)
 
-        destination_path = destination_dir / unique_name
+        destination_path = (destination_dir / unique_name).resolve()
 
-        # Копируем файл в проект.
+        uploads_root = self.settings.uploads_root_dir.resolve()
+        if uploads_root not in destination_path.parents:
+            raise ValueError("Некорректный путь сохранения файла.")
+
         shutil.copy2(source_path, destination_path)
 
         file_size_bytes = destination_path.stat().st_size
         file_checksum = self._calculate_sha256(destination_path)
-        mime_type = mimetypes.guess_type(destination_path.name)[0]
+        mime_type = self._detect_mime_type(destination_path)
 
-        # Храним в БД относительный путь, чтобы проект был переносимее.
+        try:
+            destination_path.chmod(0o640)
+        except OSError:
+            pass
+
         relative_path = destination_path.relative_to(self.settings.base_dir).as_posix()
 
         return _StoredFileMeta(
             file_path_relative=relative_path,
-            original_filename=source_path.name,
+            original_filename=safe_name,
             mime_type=mime_type,
             file_size_bytes=file_size_bytes,
             file_checksum=file_checksum,

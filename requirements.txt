@@ -7,3 +7,4 @@ langgraph>=0.2.56
 torch>=2.3.0
 sentence-transformers>=3.0.1
 numpy>=1.26.4
+sqlalchemy>=2.0
