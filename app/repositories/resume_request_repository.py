@@ -24,7 +24,11 @@ class ResumeRequestRepository:
         """
         query = text(
             """
-            SELECT id, name
+            SELECT
+                id,
+                code,
+                name,
+                description
             FROM resume_sections
             WHERE id = :section_id
             LIMIT 1
@@ -81,49 +85,79 @@ class ResumeRequestRepository:
         section_id: int,
         change_description: str,
         proposed_payload_json: str | None = None,
+        predicted_section_id: int | None = None,
+        predicted_section_confidence: float | None = None,
+        predicted_section_reason: str | None = None,
+        section_detection_source: str | None = None,
+        section_detection_candidates_json: str | None = None,
     ) -> int:
         """
         Создаёт запись в resume_change_requests.
         """
+        table_columns = self._get_table_columns("resume_change_requests")
+
+        column_names = [
+            "employee_user_id",
+            "section_id",
+            "target_entity_type",
+            "target_entity_id",
+            "change_description",
+            "proposed_payload",
+            "status",
+            "submitted_at",
+            "reviewed_by_hr_user_id",
+            "reviewed_at",
+            "review_comment",
+        ]
+
+        value_fragments = [
+            ":employee_user_id",
+            ":section_id",
+            "NULL",
+            "NULL",
+            ":change_description",
+            ":proposed_payload_json",
+            "'pending'",
+            "NOW()",
+            "NULL",
+            "NULL",
+            "NULL",
+        ]
+
+        params: dict[str, Any] = {
+            "employee_user_id": employee_user_id,
+            "section_id": section_id,
+            "change_description": change_description,
+            "proposed_payload_json": proposed_payload_json,
+        }
+
+        optional_values = {
+            "predicted_section_id": predicted_section_id,
+            "predicted_section_confidence": predicted_section_confidence,
+            "predicted_section_reason": predicted_section_reason,
+            "section_detection_source": section_detection_source,
+            "section_detection_candidates_json": section_detection_candidates_json,
+        }
+
+        for column_name, value in optional_values.items():
+            if column_name not in table_columns:
+                continue
+
+            column_names.append(column_name)
+            value_fragments.append(f":{column_name}")
+            params[column_name] = value
+
         query = text(
-            """
+            f"""
             INSERT INTO resume_change_requests (
-                employee_user_id,
-                section_id,
-                target_entity_type,
-                target_entity_id,
-                change_description,
-                proposed_payload,
-                status,
-                submitted_at,
-                reviewed_by_hr_user_id,
-                reviewed_at,
-                review_comment
+                {", ".join(column_names)}
             ) VALUES (
-                :employee_user_id,
-                :section_id,
-                NULL,
-                NULL,
-                :change_description,
-                :proposed_payload_json,
-                'pending',
-                NOW(),
-                NULL,
-                NULL,
-                NULL
+                {", ".join(value_fragments)}
             )
             """
         )
 
-        result = self.session.execute(
-            query,
-            {
-                "employee_user_id": employee_user_id,
-                "section_id": section_id,
-                "change_description": change_description,
-                "proposed_payload_json": proposed_payload_json,
-            },
-        )
+        self.session.execute(query, params)
 
         last_id_result = self.session.execute(text("SELECT LAST_INSERT_ID()"))
         last_id = last_id_result.scalar_one()
@@ -138,10 +172,14 @@ class ResumeRequestRepository:
         mime_type: str | None,
         file_size_bytes: int,
         file_checksum: str,
+        extracted_text: str | None = None,
+        extraction_status: str = "pending",
     ) -> int:
         """
         Создаёт запись о прикреплённом документе.
         """
+        normalized_status = extraction_status if extraction_status in {"pending", "processed", "failed"} else "pending"
+
         query = text(
             """
             INSERT INTO employee_documents (
@@ -169,8 +207,8 @@ class ResumeRequestRepository:
                 :mime_type,
                 :file_size_bytes,
                 :file_checksum,
-                NULL,
-                'pending',
+                :extracted_text,
+                :extraction_status,
                 NULL,
                 NOW(),
                 NOW()
@@ -178,7 +216,7 @@ class ResumeRequestRepository:
             """
         )
 
-        result = self.session.execute(
+        self.session.execute(
             query,
             {
                 "owner_user_id": owner_user_id,
@@ -188,6 +226,8 @@ class ResumeRequestRepository:
                 "mime_type": mime_type,
                 "file_size_bytes": file_size_bytes,
                 "file_checksum": file_checksum,
+                "extracted_text": extracted_text,
+                "extraction_status": normalized_status,
             },
         )
 
@@ -290,3 +330,22 @@ class ResumeRequestRepository:
                     "recipient_user_id": recipient_user_id,
                 },
             )
+    def _get_table_columns(self, table_name: str) -> set[str]:
+        """
+        Возвращает множество колонок таблицы в текущей БД.
+        """
+        query = text(
+            """
+            SELECT column_name AS column_name
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+            """
+        )
+
+        rows = self.session.execute(
+            query,
+            {"table_name": table_name},
+        ).mappings().all()
+
+        return {str(row["column_name"]) for row in rows if row.get("column_name")}

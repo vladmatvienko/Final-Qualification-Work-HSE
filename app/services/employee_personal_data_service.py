@@ -28,6 +28,15 @@ from app.repositories.employee_profile_repository import EmployeeProfileReposito
 from app.repositories.resume_request_repository import ResumeRequestRepository
 from app.services.achievement_engine_service import AchievementEngineService
 
+from app.services.document_text_extraction_service import (
+    DocumentTextExtractionResult,
+    DocumentTextExtractionService,
+)
+from app.services.resume_section_classifier_service import (
+    ResumeSectionClassificationResult,
+    ResumeSectionClassifierService,
+)
+
 
 @dataclass(frozen=True)
 class _StoredFileMeta:
@@ -90,6 +99,8 @@ class EmployeePersonalDataService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.achievement_engine = AchievementEngineService()
+        self.document_text_extraction_service = DocumentTextExtractionService()
+        self.resume_section_classifier_service = ResumeSectionClassifierService()
 
     def _evaluate_achievements_after_resume_change(self, employee_user_id: int) -> None:
         """
@@ -311,26 +322,6 @@ class EmployeePersonalDataService:
         """
         Обрабатывает форму сотрудника и сохраняет заявку в БД.
         """
-        # -----------------------------
-        # Валидация выбранного раздела
-        # -----------------------------
-        if section_id_raw in (None, "", "None"):
-            return ResumeChangeRequestResult(
-                success=False,
-                message="Выберите раздел, который хотите дополнить или изменить.",
-            )
-
-        try:
-            section_id = int(section_id_raw)
-        except (TypeError, ValueError):
-            return ResumeChangeRequestResult(
-                success=False,
-                message="Выбран некорректный раздел. Повторите выбор из списка.",
-            )
-
-        # -----------------------------
-        # Валидация описания
-        # -----------------------------
         normalized_description = (change_description or "").strip()
         if not normalized_description:
             return ResumeChangeRequestResult(
@@ -339,6 +330,9 @@ class EmployeePersonalDataService:
             )
 
         stored_file: _StoredFileMeta | None = None
+        extraction_result: DocumentTextExtractionResult | None = None
+        classification_result: ResumeSectionClassificationResult | None = None
+        detection_source = "manual"
 
         try:
             if uploaded_file_path:
@@ -346,6 +340,55 @@ class EmployeePersonalDataService:
                     employee_user_id=employee_user_id,
                     source_file_path=uploaded_file_path,
                 )
+                extraction_result = self._extract_attachment_text(stored_file)
+
+            attachment_text = (
+                extraction_result.extracted_text
+                if extraction_result and extraction_result.is_text_extracted
+                else None
+            )
+
+            # -----------------------------------------------------
+            # 1. Ручной fallback: section_id передан из dropdown.
+            # -----------------------------------------------------
+            if not self._is_empty_section_value(section_id_raw):
+                section_id = self._parse_manual_section_id(section_id_raw)
+                detection_source = "manual"
+
+            # -----------------------------------------------------
+            # 2. Основной сценарий: автоопределение раздела.
+            # -----------------------------------------------------
+            else:
+                classification_result = self.resume_section_classifier_service.classify_section(
+                    change_description=normalized_description,
+                    attachment_text=attachment_text,
+                )
+
+                if not classification_result.success or classification_result.needs_manual_selection:
+                    if stored_file:
+                        self._remove_stored_file_safely(stored_file.file_path_absolute)
+
+                    return ResumeChangeRequestResult(
+                        success=False,
+                        message=self._build_low_confidence_message(classification_result),
+                        needs_manual_section_selection=True,
+                        detected_section_id=classification_result.section_id,
+                        detected_section_name=classification_result.section_name,
+                        detected_confidence=classification_result.confidence,
+                    )
+
+                if classification_result.section_id is None:
+                    if stored_file:
+                        self._remove_stored_file_safely(stored_file.file_path_absolute)
+
+                    return ResumeChangeRequestResult(
+                        success=False,
+                        message="Система не вернула section_id. Выберите раздел вручную.",
+                        needs_manual_section_selection=True,
+                    )
+
+                section_id = int(classification_result.section_id)
+                detection_source = "ai"
 
             with get_db_session() as session:
                 request_repo = ResumeRequestRepository(session)
@@ -353,7 +396,7 @@ class EmployeePersonalDataService:
                 section_row = request_repo.get_section_by_id(section_id)
                 if not section_row:
                     raise ValueError(
-                        "Выбранный раздел не найден в справочнике resume_sections."
+                        "Выбранный или автоматически определённый раздел не найден в справочнике resume_sections."
                     )
 
                 employee_full_name = request_repo.get_employee_full_name(employee_user_id)
@@ -362,19 +405,47 @@ class EmployeePersonalDataService:
                         "Не удалось определить сотрудника, который отправляет заявку."
                     )
 
+                proposed_payload = self._build_detection_payload(
+                    stored_file=stored_file,
+                    extraction_result=extraction_result,
+                    classification_result=classification_result,
+                    detection_source=detection_source,
+                )
+
                 proposed_payload_json = json.dumps(
-                    {
-                        "submitted_via": "employee_personal_data_form",
-                        "has_attachment": bool(stored_file),
-                    },
+                    proposed_payload,
                     ensure_ascii=False,
                 )
+
+                candidates_json = None
+                if classification_result is not None:
+                    candidates_json = json.dumps(
+                        classification_result.candidates_as_dicts(),
+                        ensure_ascii=False,
+                    )
 
                 request_id = request_repo.create_resume_change_request(
                     employee_user_id=employee_user_id,
                     section_id=section_id,
                     change_description=normalized_description,
                     proposed_payload_json=proposed_payload_json,
+                    predicted_section_id=(
+                        classification_result.section_id
+                        if classification_result is not None
+                        else None
+                    ),
+                    predicted_section_confidence=(
+                        classification_result.confidence
+                        if classification_result is not None
+                        else None
+                    ),
+                    predicted_section_reason=(
+                        classification_result.reason
+                        if classification_result is not None
+                        else None
+                    ),
+                    section_detection_source=detection_source,
+                    section_detection_candidates_json=candidates_json,
                 )
 
                 if stored_file:
@@ -386,6 +457,16 @@ class EmployeePersonalDataService:
                         mime_type=stored_file.mime_type,
                         file_size_bytes=stored_file.file_size_bytes,
                         file_checksum=stored_file.file_checksum,
+                        extracted_text=(
+                            extraction_result.extracted_text
+                            if extraction_result is not None
+                            else None
+                        ),
+                        extraction_status=(
+                            extraction_result.extraction_status
+                            if extraction_result is not None
+                            else "pending"
+                        ),
                     )
 
                 notification_id = request_repo.create_hr_notification(
@@ -404,11 +485,24 @@ class EmployeePersonalDataService:
 
             self._evaluate_achievements_after_resume_change(employee_user_id)
 
+            if detection_source == "ai" and classification_result is not None:
+                return ResumeChangeRequestResult(
+                    success=True,
+                    message=(
+                        "Заявка успешно отправлена HR. "
+                        f"Система определила раздел: «{classification_result.section_name}» "
+                        f"с уверенностью {classification_result.confidence:.2f}."
+                    ),
+                    detected_section_id=classification_result.section_id,
+                    detected_section_name=classification_result.section_name,
+                    detected_confidence=classification_result.confidence,
+                )
+
             return ResumeChangeRequestResult(
                 success=True,
                 message=(
                     "Заявка успешно отправлена HR. "
-                    "Изменения сохранены в базе как запрос на обновление резюме."
+                    "Раздел выбран вручную, изменения сохранены в базе как запрос на обновление резюме."
                 ),
             )
 
@@ -884,3 +978,80 @@ class EmployeePersonalDataService:
                 sha256.update(chunk)
 
         return sha256.hexdigest()
+    
+    def _is_empty_section_value(self, value: str | int | None) -> bool:
+        return value in (None, "", "None")
+
+    def _parse_manual_section_id(self, section_id_raw: str | int | None) -> int:
+        try:
+            return int(section_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Выбран некорректный раздел. Повторите выбор из списка.") from exc
+
+    def _extract_attachment_text(
+        self,
+        stored_file: _StoredFileMeta | None,
+    ) -> DocumentTextExtractionResult | None:
+        if not stored_file:
+            return None
+
+        return self.document_text_extraction_service.extract_text(
+            file_path=stored_file.file_path_absolute,
+            mime_type=stored_file.mime_type,
+            original_filename=stored_file.original_filename,
+        )
+
+    def _build_low_confidence_message(
+        self,
+        classification_result: ResumeSectionClassificationResult,
+    ) -> str:
+        detected_part = ""
+        if classification_result.section_name:
+            detected_part = (
+                f" Лучший вариант системы: «{classification_result.section_name}» "
+                f"с уверенностью {classification_result.confidence:.2f}."
+            )
+
+        return (
+            "Система не смогла достаточно уверенно определить раздел резюме."
+            f"{detected_part} Выберите раздел вручную и отправьте заявку ещё раз."
+        )
+
+    def _build_detection_payload(
+        self,
+        stored_file: _StoredFileMeta | None,
+        extraction_result: DocumentTextExtractionResult | None,
+        classification_result: ResumeSectionClassificationResult | None,
+        detection_source: str,
+    ) -> dict:
+        attachment_text_extracted = bool(
+            extraction_result and extraction_result.is_text_extracted
+        )
+
+        payload = {
+            "submitted_via": "employee_personal_data_form",
+            "has_attachment": bool(stored_file),
+            "detection_source": detection_source,
+            "attachment_text_extracted": attachment_text_extracted,
+        }
+
+        if classification_result is not None:
+            payload.update(
+                {
+                    "auto_detected_section_id": classification_result.section_id,
+                    "auto_detected_section_name": classification_result.section_name,
+                    "auto_detected_confidence": classification_result.confidence,
+                    "auto_detected_reason": classification_result.reason,
+                    "auto_detected_candidates": classification_result.candidates_as_dicts(),
+                }
+            )
+
+        if extraction_result is not None:
+            payload.update(
+                {
+                    "attachment_extraction_status": extraction_result.extraction_status,
+                    "attachment_extraction_message": extraction_result.message,
+                }
+            )
+
+        return payload

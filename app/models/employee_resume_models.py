@@ -48,3 +48,8 @@ class ResumeChangeRequestResult:
     """
     success: bool
     message: str
+
+    needs_manual_section_selection: bool = False
+    detected_section_id: int | None = None
+    detected_section_name: str | None = None
+    detected_confidence: float | None = None

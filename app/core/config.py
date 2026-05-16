@@ -39,6 +39,17 @@ def _to_int(value: str | None, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+def _to_float(value: str | None, default: float) -> float:
+    """
+    Безопасно преобразует строку в float.
+    """
+    if value is None:
+        return default
+
+    try:
+        return float(value.strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return default
 
 def _normalize_demo_role(value: str | None) -> str:
     """
@@ -89,8 +100,15 @@ class Settings:
     db_name: str
     db_user: str
     db_password: str
-
+    
     uploads_root_dir: Path
+    
+    resume_section_confidence_threshold: float
+    resume_section_top_k: int
+    document_extraction_enabled: bool
+
+    hf_embedding_model: str
+    hf_reranker_model: str
 
 
 @lru_cache(maxsize=1)
@@ -121,4 +139,19 @@ def get_settings() -> Settings:
             os.getenv("UPLOADS_ROOT_DIR"),
             default_relative="uploads",
         ),
+                resume_section_confidence_threshold=_to_float(
+            os.getenv("RESUME_SECTION_CONFIDENCE_THRESHOLD"),
+            0.62,
+        ),
+        resume_section_top_k=_to_int(
+            os.getenv("RESUME_SECTION_TOP_K"),
+            5,
+        ),
+        document_extraction_enabled=_to_bool(
+            os.getenv("DOCUMENT_EXTRACTION_ENABLED"),
+            default=True,
+        ),
+
+        hf_embedding_model=os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-m3"),
+        hf_reranker_model=os.getenv("HF_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
     )

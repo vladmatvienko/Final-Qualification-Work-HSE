@@ -291,7 +291,7 @@ def _build_form_unavailable_reason(personal_data, request_section_choices: list[
         reasons.append("База данных недоступна")
 
     if not request_section_choices:
-        reasons.append("Справочник разделов резюме не загружен")
+        reasons.append("Ручной fallback недоступен: справочник разделов резюме не загружен")
 
     return " | ".join(reasons)
 
@@ -479,7 +479,7 @@ def prepare_employee_screen_payload(auth_state_dict: dict | None) -> dict:
         for option in personal_data.request_section_options
     ]
 
-    form_submit_enabled = personal_data.db_available and bool(section_choices)
+    form_submit_enabled = personal_data.db_available
 
     return {
         "nav_radio": TAB_PERSONAL,
@@ -582,7 +582,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             gr.update(visible=is_personal_tab),
             gr.update(visible="hidden"),
             "",
-            gr.update(value=None),
+            gr.update(value=None, visible=False),
             gr.update(value=""),
             gr.update(value=None),
         )
@@ -657,7 +657,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 (option.label, str(option.section_id))
                 for option in personal_data.request_section_options
             ]
-            form_submit_enabled = personal_data.db_available and bool(section_choices)
+            form_submit_enabled = personal_data.db_available
             unavailable_reason = _build_form_unavailable_reason(personal_data, section_choices)
         else:
             unavailable_reason = "Сессия пользователя недействительна. Выполните вход заново."
@@ -674,7 +674,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             gr.update(visible=True),
             "",
             form_message,
-            gr.update(choices=section_choices, value=None, interactive=form_submit_enabled),
+            gr.update(choices=section_choices, value=None, interactive=form_submit_enabled, visible=False,),
             gr.update(value="", interactive=form_submit_enabled),
             gr.update(value=None, interactive=form_submit_enabled),
             gr.update(interactive=form_submit_enabled),
@@ -687,7 +687,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             gr.update(visible=True),
             gr.update(visible="hidden"),
             "",
-            gr.update(value=None),
+            gr.update(value=None, visible=False),
             gr.update(value=""),
             gr.update(value=None),
             gr.update(interactive=False),
@@ -753,7 +753,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                 gr.update(visible="hidden"),
                 _render_feedback_html(result.message, "success"),
                 "",
-                gr.update(value=None),
+                gr.update(value=None, visible=False),
                 gr.update(value=""),
                 gr.update(value=None),
                 gr.update(interactive=False),
@@ -762,12 +762,20 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
             )
 
         reason = (unavailable_reason or "").strip()
+        needs_manual_section_selection = bool(
+            getattr(result, "needs_manual_section_selection", False)
+        )
+
         return (
             gr.update(visible=True),
             gr.update(visible=True),
             "",
             _render_feedback_html(result.message, "error"),
-            gr.update(value=selected_section_id, interactive=form_submit_enabled),
+            gr.update(
+                value=None if needs_manual_section_selection else selected_section_id,
+                interactive=form_submit_enabled,
+                visible=needs_manual_section_selection or bool(selected_section_id),
+            ),
             gr.update(value=description_text, interactive=form_submit_enabled),
             gr.update(interactive=form_submit_enabled),
             gr.update(interactive=form_submit_enabled),
@@ -1275,7 +1283,9 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                                 """
                                 <div class="resume-change-form-title">Запрос на изменение резюме</div>
                                 <div class="resume-change-form-subtitle">
-                                    Выберите раздел, опишите изменение и при необходимости приложите подтверждающий файл.
+                                    Опишите изменение и приложите подтверждающий файл.
+                                    Раздел резюме система определит автоматически. Если система не сможет сделать выбор,
+                                    появится ручной выбор раздела.
                                 </div>
                                 """
                             )
@@ -1288,6 +1298,7 @@ def build_employee_screen(auth_state: gr.State, app_title: str) -> dict[str, gr.
                                 value=None,
                                 allow_custom_value=False,
                                 interactive=False,
+                                visible=False,
                             )
 
                             description_text = gr.Textbox(

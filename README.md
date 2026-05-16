@@ -191,26 +191,35 @@ pip install -r requirements-dev.txt
 
 ```env
 APP_TITLE=Эльбрус
-
 GRADIO_SERVER_NAME=127.0.0.1
 GRADIO_SERVER_PORT=7860
-GRADIO_DEBUG=True
+GRADIO_DEBUG=1
 
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=elbrus
 DB_USER=root
-DB_PASSWORD=your_password
+DB_PASSWORD=
 
 UPLOADS_ROOT_DIR=uploads
+DEMO_EMPLOYEE_NAME=Матвиенко Матвей Матвеевич
+DEMO_HR_NAME=Соколова Марина Игоревна
 
-HF_TOKEN=your_huggingface_token
-HF_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-HF_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
-HF_TOP_K=10
+ELBRUS_ANONYMIZATION_SALT=elbrus-dev-salt-change-me
+
+RESUME_SECTION_CONFIDENCE_THRESHOLD=0.62
+RESUME_SECTION_TOP_K=5
+DOCUMENT_EXTRACTION_ENABLED=1
+
+HF_EMBEDDING_MODEL=BAAI/bge-m3
+HF_RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+HF_DEVICE=auto
+HF_BATCH_SIZE=8
+HF_TOP_K=15
 HF_RERANK_TOP_N=10
-
-ANONYMIZATION_SALT=change_this_value
+HF_MAX_RERANK_LENGTH=1024
+HF_EMBEDDING_NORMALIZE=true
+HF_TOKEN =
 ```
 
 ---
@@ -358,19 +367,19 @@ HR выбирает кандидата из анонимного списка и
 
 Поддерживаемые форматы:
 
-- PDF;
-- DOC;
-- DOCX;
-- JPG;
-- JPEG;
-- PNG.
+- PDF
+- DOC
+- DOCX
+- JPG
+- JPEG
+- PNG
 
 Ограничения:
 
-- максимальный размер файла: 10 МБ;
-- исполняемые файлы запрещены;
-- файл проходит базовую проверку расширения, MIME-типа и сигнатуры;
-- файл сохраняется в каталоге `uploads`.
+- Максимальный размер файла: 10 МБ
+- Исполняемые файлы запрещены
+- Файл проходит базовую проверку расширения, MIME-типа и сигнатуры
+- Файл сохраняется в каталоге `uploads`
 
 ---
 
@@ -380,12 +389,12 @@ HR выбирает кандидата из анонимного списка и
 
 Основные реализованные контуры:
 
-- авторизация;
-- личный кабинет сотрудника;
-- достижения;
-- магазин бонусов;
-- уведомления;
-- HR-уведомления;
-- анонимный HR-поиск кандидатов;
-- отправка приглашений;
-- базовый тестовый контур.
+- Авторизация
+- Личный кабинет сотрудника
+- Достижения
+- Магазин бонусов
+- Уведомления
+- HR-уведомления
+- Анонимный HR-поиск кандидатов
+- Отправка приглашений
+- Базовый тестовый контур
